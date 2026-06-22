@@ -19,7 +19,7 @@ on:
 
 jobs:
   deploy-vue:
-    runs-on: [self-hosted, vue-builder]
+    runs-on: [self-hosted, vue-website]
 
     steps:
       - name: Native Git Checkout with SSH
