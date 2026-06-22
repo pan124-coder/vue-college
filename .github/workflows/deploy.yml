@@ -1,0 +1,84 @@
+name: Vue-College-Website
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - 'src/**'
+      - 'public/**'
+      - 'index.html'
+      - 'package.json'
+      - 'vite.config.*'
+  workflow_dispatch:
+    inputs:
+      force_rebuild:
+        description: '是否强制重新编译打包 (Build & Deploy)?'
+        required: true
+        type: boolean
+        default: false
+
+jobs:
+  deploy-vue:
+    runs-on: [self-hosted, vue-builder]
+
+    steps:
+      - name: Native Git Checkout with SSH
+        run: |
+          export PATH=/usr/local/bin:/usr/bin:/usr/local/sbin:/usr/sbin:$PATH
+          find . -mindepth 1 -delete 2>/dev/null || true
+          git clone --depth 1 -b main git@github.com:pan124-coder/vue-college-website.git .
+
+      - name: Frontend MD5 Fingerprint Detection
+        id: filter
+        run: |
+          export PATH=/usr/local/bin:/usr/bin:/usr/local/sbin:/usr/sbin:$PATH
+          CACHE_DIR="/tmp/vue_website_deploy_cache"
+          sudo mkdir -p $CACHE_DIR
+          sudo chown -R $(whoami):$(whoami) $CACHE_DIR
+          
+          OLD_FINGERPRINT="$CACHE_DIR/last_frontend_md5.txt"
+          CURRENT_FINGERPRINT=$(find src/ public/ package.json -type f 2>/dev/null | sort | xargs md5sum 2>/dev/null | md5sum | cut -d' ' -f1)
+          echo "Current Frontend Fingerprint: $CURRENT_FINGERPRINT"
+          
+          NEED_BUILD="false"
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ github.event.inputs.force_rebuild }}" = "true" ]; then
+              NEED_BUILD="true"
+          elif [ ! -f "$OLD_FINGERPRINT" ]; then
+              NEED_BUILD="true"
+          elif [ "$CURRENT_FINGERPRINT" != "$(cat $OLD_FINGERPRINT 2>/dev/null)" ]; then
+              NEED_BUILD="true"
+          fi
+          
+          echo "$CURRENT_FINGERPRINT" > "$OLD_FINGERPRINT" || true
+          if [ "$NEED_BUILD" = "true" ]; then
+              touch ./RUN_NODE_BUILD || true
+              [ -d "dist" ] && sudo rm -rf dist/ || true
+          fi
+          echo "code_changed=$NEED_BUILD" >> $GITHUB_OUTPUT
+
+      - name: Install Dependencies and Build Vue
+        run: |
+          if [ -f "./RUN_NODE_BUILD" ]; then
+              export PATH=/usr/bin:/usr/local/bin:/bin:$PATH
+              node -v
+              npm -v
+              npm install --registry=https://registry.npmmirror.com
+              npm run build
+          else
+              echo "Skip NodeJS Build: Source code hash is unchanged."
+          fi
+
+      - name: Local Release and Nginx Link Management
+        run: |
+          export PATH=/usr/local/bin:/usr/bin:/usr/local/sbin:/usr/sbin:$PATH
+          if [ -f "./RUN_NODE_BUILD" ]; then
+              VUE_REL_DIR="/app/vue-college-website/releases/${{ github.sha }}"
+              mkdir -p $VUE_REL_DIR
+              cp -r dist/* $VUE_REL_DIR/
+              ln -snf $VUE_REL_DIR /app/vue-college-website/current
+              ln -snf /app/vue-college-website/current /var/www/vue-project
+              cd /app/vue-college-website/releases && ls -t | tail -n +6 | xargs rm -rf 2>/dev/null || true
+              echo "Website deployment successful!"
+          else
+              echo "No deployment needed."
+          fi
