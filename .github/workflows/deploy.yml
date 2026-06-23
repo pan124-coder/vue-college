@@ -1,4 +1,4 @@
-name: Vue-College-Website
+name: Vue-College-Frontend
 
 on:
   push:
@@ -9,6 +9,7 @@ on:
       - 'index.html'
       - 'package.json'
       - 'vite.config.*'
+      - 'vue.config.*'
   workflow_dispatch:
     inputs:
       force_rebuild:
@@ -18,67 +19,114 @@ on:
         default: false
 
 jobs:
-  deploy-vue:
+  deploy-vue-college:
+    # 注意：这里需要使用不同的标签或同一标签，但会共用Runner
     runs-on: [self-hosted, vue-website]
 
     steps:
+      # =========================================================
+      # 阶段一：拉取第二个项目的代码
+      # =========================================================
       - name: Native Git Checkout with SSH
         run: |
           export PATH=/usr/local/bin:/usr/bin:/usr/local/sbin:/usr/sbin:$PATH
+          
+          echo "Cleaning up workspace..."
           find . -mindepth 1 -delete 2>/dev/null || true
+          
+          # 注意：这里需要修改为第二个项目的仓库地址
+          echo "Cloning news frontend repository via SSH..."
           git clone --depth 1 -b main git@github.com:pan124-coder/vue-college.git .
 
+      # =========================================================
+      # 阶段二：MD5指纹检测
+      # =========================================================
       - name: Frontend MD5 Fingerprint Detection
         id: filter
         run: |
           export PATH=/usr/local/bin:/usr/bin:/usr/local/sbin:/usr/sbin:$PATH
-          CACHE_DIR="/tmp/vue_website_deploy_cache"
+          
+          CACHE_DIR="/tmp/vue_news_deploy_cache"
           sudo mkdir -p $CACHE_DIR
           sudo chown -R $(whoami):$(whoami) $CACHE_DIR
           
           OLD_FINGERPRINT="$CACHE_DIR/last_frontend_md5.txt"
+          
           CURRENT_FINGERPRINT=$(find src/ public/ package.json -type f 2>/dev/null | sort | xargs md5sum 2>/dev/null | md5sum | cut -d' ' -f1)
           echo "Current Frontend Fingerprint: $CURRENT_FINGERPRINT"
           
           NEED_BUILD="false"
+          
           if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ github.event.inputs.force_rebuild }}" = "true" ]; then
+              echo "Decision: Manual Force Build."
               NEED_BUILD="true"
           elif [ ! -f "$OLD_FINGERPRINT" ]; then
+              echo "Decision: No frontend cache found. First time build."
               NEED_BUILD="true"
           elif [ "$CURRENT_FINGERPRINT" != "$(cat $OLD_FINGERPRINT 2>/dev/null)" ]; then
+              echo "Decision: Frontend source code changed."
               NEED_BUILD="true"
+          else
+              echo "Decision: Frontend code identical. Skip build."
+              NEED_BUILD="false"
           fi
           
           echo "$CURRENT_FINGERPRINT" > "$OLD_FINGERPRINT" || true
+          
           if [ "$NEED_BUILD" = "true" ]; then
               touch ./RUN_NODE_BUILD || true
-              [ -d "dist" ] && sudo rm -rf dist/ || true
+              if [ -d "dist" ]; then
+                  sudo rm -rf dist/ || rm -rf dist/ || true
+              fi
           fi
+          
           echo "code_changed=$NEED_BUILD" >> $GITHUB_OUTPUT
+          exit 0
 
+      # =========================================================
+      # 阶段三：安装依赖和打包
+      # =========================================================
       - name: Install Dependencies and Build Vue
+        env:
+          PATH: /usr/bin:/usr/local/bin:/bin:./node_modules/.bin:$PATH
         run: |
           if [ -f "./RUN_NODE_BUILD" ]; then
+              echo "Executing NodeJS Build..."
               export PATH=/usr/bin:/usr/local/bin:/bin:$PATH
               node -v
               npm -v
               npm install --registry=https://registry.npmmirror.com
+              export PATH=$(pwd)/node_modules/.bin:$PATH
+              chmod +x node_modules/.bin/* 2>/dev/null || true
               npm run build
           else
               echo "Skip NodeJS Build: Source code hash is unchanged."
           fi
 
+      # =========================================================
+      # 阶段四：部署到第二个项目的路径
+      # =========================================================
       - name: Local Release and Nginx Link Management
         run: |
           export PATH=/usr/local/bin:/usr/bin:/usr/local/sbin:/usr/sbin:$PATH
+          
           if [ -f "./RUN_NODE_BUILD" ]; then
+              echo "Action: Deploying New News Frontend Version"
+          
+              # 第二个项目的部署路径
               VUE_REL_DIR="/app/vue-college-website/releases/${{ github.sha }}"
               mkdir -p $VUE_REL_DIR
+          
               cp -r dist/* $VUE_REL_DIR/
+          
+              # 创建软链接
               ln -snf $VUE_REL_DIR /app/vue-college-website/current
               ln -snf /app/vue-college-website/current /var/www/vue-project
+          
+              # 清理旧版本
               cd /app/vue-college-website/releases && ls -t | tail -n +6 | xargs rm -rf 2>/dev/null || true
-              echo "Website deployment successful!"
+          
+              echo "Deployment successful!"
           else
-              echo "No deployment needed."
+              echo "No deployment needed. Frontend is up to date."
           fi
